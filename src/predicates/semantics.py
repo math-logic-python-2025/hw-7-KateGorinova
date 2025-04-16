@@ -88,7 +88,7 @@ class Model(Generic[T]):
             relation_arities[relation] = arity
         function_arities = {}
         for function in function_interpretations:
-            assert is_function(function)
+            assert checking(function)
             function_interpretation = function_interpretations[function]
             assert len(function_interpretation) > 0
             some_argument = next(iter(function_interpretation))
@@ -152,6 +152,18 @@ class Model(Generic[T]):
         assert term.variables().issubset(assignment.keys())
         for function, arity in term.functions():
             assert function in self.function_interpretations and self.function_arities[function] == arity
+
+        root_value = term.root
+        if is_constant(root_value):
+            evaluated_result = self.constant_interpretations.get(root_value)
+        elif is_variable(root_value):
+            evaluated_result = assignment.get(root_value)
+        elif checking(root_value):
+            args_evaluated = [self.evaluate_term(arg, assignment) for arg in term.arguments]
+            func_interp = self.function_interpretations.get(root_value, {})
+            evaluated_result = func_interp.get(tuple(args_evaluated))
+        return evaluated_result
+
         # Task 7.7
 
     def evaluate_formula(self, formula: Formula, assignment: Mapping[str, T] = frozendict()) -> bool:
@@ -177,6 +189,55 @@ class Model(Generic[T]):
             assert function in self.function_interpretations and self.function_arities[function] == arity
         for relation, arity in formula.relations():
             assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
+
+        operator = formula.root
+
+        if is_equality(operator):
+            left_val = self.evaluate_term(formula.arguments[0], assignment)
+            right_val = self.evaluate_term(formula.arguments[1], assignment)
+            return left_val is right_val
+
+        elif is_relation(operator):
+            evaluated_args = [self.evaluate_term(arg, assignment) for arg in formula.arguments]
+            return tuple(evaluated_args) in self.relation_interpretations[operator]
+
+        elif is_unary(operator):
+            inner_result = self.evaluate_formula(formula.first, assignment)
+            return not inner_result
+
+        elif is_binary(operator):
+            left_expr = self.evaluate_formula(formula.first, assignment)
+            right_expr = self.evaluate_formula(formula.second, assignment)
+
+            binary_operations = {
+                '&': lambda x, y: x and y,
+                '|': lambda x, y: x or y,
+                '->': lambda x, y: not x or y,
+                '-&': lambda x, y: not (x and y),
+                '-|': lambda x, y: not (x or y),
+                '+': lambda x, y: x != y,
+                '<->': lambda x, y: x == y
+            }
+
+            if operator in binary_operations:
+                return binary_operations[operator](left_expr, right_expr)
+
+        elif is_quantifier(operator):
+            var_name = formula.variable
+            possible_values = ({var_name: val} for val in self.universe)
+
+            results = []
+            for val_assignment in possible_values:
+                combined_assignment = {**assignment, **val_assignment}
+                res = self.evaluate_formula(formula.statement, combined_assignment)
+                results.append(res)
+
+            if operator == 'A':
+                return all(results)
+            else:
+                return any(results)
+
+        return False
         # Task 7.8
 
     def is_model_of(self, formulas: AbstractSet[Formula]) -> bool:
@@ -198,4 +259,11 @@ class Model(Generic[T]):
                 assert function in self.function_interpretations and self.function_arities[function] == arity
             for relation, arity in formula.relations():
                 assert relation in self.relation_interpretations and self.relation_arities[relation] in {-1, arity}
+            modified_formulas = set()
+            for current_formula in formulas:
+                updated_formula = current_formula
+                for var in updated_formula.free_variables():
+                    updated_formula = Formula('A', var, updated_formula)
+                modified_formulas.add(updated_formula)
+            return all(self.evaluate_formula(f) for f in modified_formulas)
         # Task 7.9
